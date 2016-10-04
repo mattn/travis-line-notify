@@ -1,15 +1,16 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"io/ioutil"
 	"log"
+	"mime/multipart"
 	"net/http"
-	"net/url"
 	"os"
-	"strings"
+	"sync"
 	"time"
 )
 
@@ -32,9 +33,12 @@ type Build struct {
 
 func main() {
 	flag.Parse()
+
 	idmap := map[int]bool{}
 
+	var wg sync.WaitGroup
 	for _, proj := range os.Args {
+		wg.Add(1)
 		go func(proj string) {
 			first := true
 			for {
@@ -53,6 +57,9 @@ func main() {
 					if _, ok := idmap[build.Id]; ok {
 						continue
 					}
+					if !first {
+						log.Printf("%s: #%d %s", proj, build.Id, build.State)
+					}
 					if build.State != "finished" {
 						continue
 					}
@@ -63,21 +70,28 @@ func main() {
 					}
 
 					message := proj
+					icon := ""
 					if build.Result != 0 {
 						message += "(failed): "
+						icon = "https://raw.githubusercontent.com/mattn/travis-notify/gh-pages/failed.png"
 					} else {
 						message += "(success): "
+						icon = "https://raw.githubusercontent.com/mattn/travis-notify/gh-pages/success.png"
 					}
-					message += fmt.Sprintf("https://travis-ci.org/%s/jobs/%d", proj, build.Id)
+					message += fmt.Sprintf("https://travis-ci.org/%s/builds/%d", proj, build.Id)
 
-					params := url.Values{
-						"message": []string{message},
-					}
-					req, err := http.NewRequest("POST", "application/x-www-form-urlencoded", strings.NewReader(params.Encode()))
+					buf := bytes.Buffer{}
+					mw := multipart.NewWriter(&buf)
+					mw.WriteField("message", message)
+					mw.WriteField("imageThumbnail", icon)
+					mw.WriteField("imageFullsize", icon)
+					mw.Close()
+					req, err := http.NewRequest("POST", "https://notify-api.line.me/api/notify", &buf)
 					if err != nil {
 						log.Print(err)
 						continue
 					}
+					req.Header.Add("Content-Type", mw.FormDataContentType())
 					req.Header.Set("Authorization", "Bearer "+*token)
 					resp, err := http.DefaultClient.Do(req)
 					if err != nil {
@@ -95,8 +109,8 @@ func main() {
 
 				time.Sleep(30 * time.Second)
 			}
+			wg.Done()
 		}(proj)
 	}
-
-	select {}
+	wg.Wait()
 }
